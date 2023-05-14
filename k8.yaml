@@ -1,0 +1,359 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kc-support-user-sa
+  namespace: klovercloud
+
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-crb
+  namespace: klovercloud
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: kc-support-user-sa
+  namespace: klovercloud
+
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kc-support-jnb-data
+  namespace: klovercloud
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kc-support-jnb
+  namespace: klovercloud
+spec:
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: http-rest
+    port: 8888
+    protocol: TCP
+    targetPort: 8888
+  selector:
+    app: kc-support-jnb
+  sessionAffinity: None
+  type: ClusterIP
+
+
+---
+apiVersion: v1
+data:
+  jupyter_notebook_config.py: |
+    # Copyright (c) Jupyter Development Team.
+    # Distributed under the terms of the Modified BSD License.
+
+    from jupyter_core.paths import jupyter_data_dir
+    import subprocess
+    import os
+    import errno
+    import stat
+    from notebook.auth import passwd
+
+    c = get_config()  # noqa: F821
+    c.NotebookApp.ip = "0.0.0.0"
+    c.NotebookApp.port = 8888
+    c.NotebookApp.open_browser = False
+    c.NotebookApp.password = passwd(os.getenv('JNB_PASSWORD'), 'sha1')
+
+    # Kernel Idle Timeout Set to 10m
+    c.MappingKernelManager.cull_idle_timeout = 600
+
+    # https://github.com/jupyter/notebook/issues/3130
+    c.FileContentsManager.delete_to_trash = False
+
+    # Generate a self-signed certificate
+    if "GEN_CERT" in os.environ:
+        dir_name = jupyter_data_dir()
+        pem_file = os.path.join(dir_name, "notebook.pem")
+        try:
+            os.makedirs(dir_name)
+        except OSError as exc:  # Python >2.5
+            if exc.errno == errno.EEXIST and os.path.isdir(dir_name):
+                pass
+            else:
+                raise
+
+        # Generate an openssl.cnf file to set the distinguished name
+        cnf_file = os.path.join(os.getenv("CONDA_DIR", "/usr/lib"), "ssl", "openssl.cnf")
+        if not os.path.isfile(cnf_file):
+            with open(cnf_file, "w") as fh:
+                fh.write(
+                    """\
+    [req]
+    distinguished_name = req_distinguished_name
+    [req_distinguished_name]
+    """
+                )
+
+        # Generate a certificate if one doesn't exist on disk
+        subprocess.check_call(
+            [
+                "openssl",
+                "req",
+                "-new",
+                "-newkey=rsa:2048",
+                "-days=365",
+                "-nodes",
+                "-x509",
+                "-subj=/C=XX/ST=XX/L=XX/O=generated/CN=generated",
+                f"-keyout={pem_file}",
+                f"-out={pem_file}",
+            ]
+        )
+        # Restrict access to the file
+        os.chmod(pem_file, stat.S_IRUSR | stat.S_IWUSR)
+        c.NotebookApp.certfile = pem_file
+
+    # Change default umask for all subprocesses of the notebook server if set in
+    # the environment
+    if "NB_UMASK" in os.environ:
+        os.umask(int(os.environ["NB_UMASK"], 8))
+  jupyter_server_config.py: |
+    # Copyright (c) Jupyter Development Team.
+    # Distributed under the terms of the Modified BSD License.
+
+    from jupyter_core.paths import jupyter_data_dir
+    import subprocess
+    import os
+    import errno
+    import stat
+
+    c = get_config()  # noqa: F821
+    c.ServerApp.ip = "0.0.0.0"
+    c.ServerApp.port = 8888
+    c.ServerApp.open_browser = False
+
+    # https://github.com/jupyter/notebook/issues/3130
+    c.FileContentsManager.delete_to_trash = False
+
+    # Generate a self-signed certificate
+    if "GEN_CERT" in os.environ:
+        dir_name = jupyter_data_dir()
+        pem_file = os.path.join(dir_name, "notebook.pem")
+        try:
+            os.makedirs(dir_name)
+        except OSError as exc:  # Python >2.5
+            if exc.errno == errno.EEXIST and os.path.isdir(dir_name):
+                pass
+            else:
+                raise
+
+        # Generate an openssl.cnf file to set the distinguished name
+        cnf_file = os.path.join(os.getenv("CONDA_DIR", "/usr/lib"), "ssl", "openssl.cnf")
+        if not os.path.isfile(cnf_file):
+            with open(cnf_file, "w") as fh:
+                fh.write(
+                    """\
+    [req]
+    distinguished_name = req_distinguished_name
+    [req_distinguished_name]
+    """
+                )
+
+        # Generate a certificate if one doesn't exist on disk
+        subprocess.check_call(
+            [
+                "openssl",
+                "req",
+                "-new",
+                "-newkey=rsa:2048",
+                "-days=365",
+                "-nodes",
+                "-x509",
+                "-subj=/C=XX/ST=XX/L=XX/O=generated/CN=generated",
+                f"-keyout={pem_file}",
+                f"-out={pem_file}",
+            ]
+        )
+        # Restrict access to the file
+        os.chmod(pem_file, stat.S_IRUSR | stat.S_IWUSR)
+        c.ServerApp.certfile = pem_file
+
+    # Change default umask for all subprocesses of the notebook server if set in
+    # the environment
+    if "NB_UMASK" in os.environ:
+        os.umask(int(os.environ["NB_UMASK"], 8))
+kind: ConfigMap
+metadata:
+  name: kc-support-jnb-config
+  namespace: klovercloud
+
+
+
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kcsjnb
+  namespace: klovercloud
+spec:
+  minReadySeconds: 25
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: kc-support-jnb
+  strategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: kc-support-jnb
+    spec:
+      containers:
+      - args:
+        - jupyter lab --ip 0.0.0.0
+        command:
+        - /bin/bash
+        - -c
+        - --
+        env:
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: MY_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        - name: JNB_PASSWORD
+          value: "KcJnb@2023#"
+        image: quay.io/klovercloud/jupyter-notebook:3.0-kc-1.1
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 10
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          tcpSocket:
+            port: 8888
+          timeoutSeconds: 10
+        name: app
+        ports:
+        - containerPort: 8888
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 10
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          tcpSocket:
+            port: 8888
+          timeoutSeconds: 10
+        resources:
+          limits:
+            cpu: 500m
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 512Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /etc/jupyter
+          name: config-volume
+        - mountPath: /home/klovercloud/work
+          name: data-vol
+          subPath: rfs/home/klovercloud/work
+        - mountPath: /home/klovercloud/data
+          name: data-vol
+          subPath: rfs/home/klovercloud/data
+        - mountPath: /pv
+          name: data-vol
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 2000
+        runAsUser: 1000
+      serviceAccount: kc-support-user-sa
+      serviceAccountName: kc-support-user-sa
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: kc-support-jnb-config
+        name: config-volume
+      - name: data-vol
+        persistentVolumeClaim:
+          claimName: kc-support-jnb-data
+
+
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/limit-rps: "20"
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/server-snippets: |
+      location /terminals/websocket {
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_http_version 1.1;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "Upgrade";
+      }
+    nginx.org/websocket-services: kc-support-jnb
+  name: kcjnb
+  namespace: klovercloud
+spec:
+  rules:
+  - host: kcjnb.k8s-1.klovercloud.io
+    http:
+      paths:
+      - backend:
+          service:
+            name: kc-support-jnb
+            port:
+              number: 8888
+        path: /
+        pathType: ImplementationSpecific
+      - backend:
+          service:
+            name: kc-support-jnb
+            port:
+              number: 8888
+        path: /terminals/websocket
+        pathType: ImplementationSpecific
+  tls:
+  - hosts:
+    - kcjnb.k8s-1.klovercloud.io
+    secretName: wild-certificate-secret
